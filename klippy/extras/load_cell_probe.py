@@ -6,6 +6,7 @@
 import logging, math
 import mcu
 from . import hx71x
+from . import cs1237
 from . import ads1220
 from . import ads131m0x
 from . import probe, manual_probe, trigger_analog, load_cell
@@ -164,12 +165,17 @@ class ContinuousTareFilter:
     # create a filter design from the parameters
     def design_filter(self, error_func):
         df = trigger_analog.DigitalFilter(self.sps, error_func)
-        if self.drift:
+
+        if self.drift is not None:
             df.add_highpass(self.drift, self.drift_delay)
-        if self.buzz:
+
+        if self.buzz is not None:
             df.add_lowpass(self.buzz, self.buzz_delay)
-        for notch in self.notches:
-            df.add_notch(notch, self.notch_quality)
+
+        if self.notches:
+            for notch in self.notches:
+                df.add_notch(notch, self.notch_quality)
+
         return df
 
 
@@ -331,10 +337,11 @@ class LoadCellProbingMove:
         # update internal tare value
         gpc = self._config_helper.get_grams_per_count() * FRAC_GRAMS_CONV
         sos_filter = self._mcu_trigger_analog.get_sos_filter()
-        sos_filter.set_offset_scale(int(-tare_counts), gpc)
+        Q17_14_FRAC_BITS = 14
+        sos_filter.set_offset_scale(int(-tare_counts), gpc, Q17_14_FRAC_BITS)
         # update trigger
         trigger_val = self._config_helper.get_trigger_force_grams(gcmd)
-        trigger_frac_grams = int(trigger_val * FRAC_GRAMS_CONV)
+        trigger_frac_grams = trigger_val * FRAC_GRAMS_CONV
         self._mcu_trigger_analog.set_trigger("abs_ge", trigger_frac_grams)
 
     # Probe towards z_min until the trigger_analog on the MCU triggers
@@ -485,6 +492,7 @@ class LoadCellPrinterProbe:
         # Sensor types supported by load_cell_probe
         sensors = {}
         sensors.update(hx71x.HX71X_SENSOR_TYPES)
+        sensors.update(cs1237.CS1237_SENSOR_TYPE)
         sensors.update(ads1220.ADS1220_SENSOR_TYPE)
         sensors.update(ads131m0x.ADS131M0X_SENSOR_TYPES)
         sensor_class = config.getchoice('sensor_type', sensors)

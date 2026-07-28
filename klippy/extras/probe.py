@@ -271,6 +271,7 @@ class DescendToEndstopHelper:
         res = self.results
         self.results = []
         return res
+
     def clear_trigger_positions(self):
         self.pull_trigger_positions()
 

@@ -342,7 +342,7 @@ class MCU_trigger_analog:
 
     def set_trigger(self, trigger_type, trigger_value):
         self._trigger_type = trigger_type
-        self._trigger_value = trigger_value
+        self._trigger_value = int(round(trigger_value))
 
     def set_raw_range(self, raw_min, raw_max):
         self._raw_min = raw_min
@@ -357,6 +357,8 @@ class MCU_trigger_analog:
         # Update trigger in mcu (if it has changed)
         args = [self._oid, self._trigger_type, self._trigger_value]
         if args != self._last_trigger_args:
+            print(args)
+            print(type(self._trigger_value), self._trigger_value)
             self._set_trigger_cmd.send(args)
             self._last_trigger_args = args
         # Update sos filter in mcu
