@@ -80,14 +80,23 @@ class CS1237:
         cmd_queue = self.mcu.alloc_command_queue()
         self.query_cs1237_cmd = self.mcu.lookup_command(
             "query_cs1237 oid=%c rest_ticks=%u", cq=cmd_queue)
-        self.ffreader.setup_query_command("query_cs1237_status oid=%c",
-                                          oid=self.oid, cq=cmd_queue)
+        self.ffreader.setup_query_command(
+            "query_cs1237_status oid=%c",
+            oid=self.oid,
+            cq=cmd_queue)
 
     def get_mcu(self):
         return self.mcu
 
     def get_samples_per_second(self):
         return self.sps
+
+    def get_status(self, eventtime):
+        return {
+            'errors': self.last_error_count,
+            'overflows': self.ffreader.get_last_overflows(),
+            'sample_rate': self.get_samples_per_second(),
+        }
 
     def lookup_sensor_error(self, error_code):
         if error_code == CS1237_ERR_CONFIG_TIMEOUT:
@@ -129,8 +138,6 @@ class CS1237:
         # Start bulk reading
         rest_ticks = self.mcu.seconds_to_clock(1. / (10. * self.sps))
         self.query_cs1237_cmd.send([self.oid, rest_ticks])
-        logging.info("CS1237 starting '%s' measurements", self.name)
-        # Initialize clock tracking
         self.ffreader.note_start()
 
     def _finish_measurements(self):
@@ -140,7 +147,6 @@ class CS1237:
         # Halt bulk reading
         self.query_cs1237_cmd.send_wait_ack([self.oid, 0])
         self.ffreader.note_end()
-        logging.info("CS1237 finished '%s' measurements", self.name)
 
     def _process_batch(self, eventtime):
         prev_overflows = self.ffreader.get_last_overflows()
@@ -150,14 +156,11 @@ class CS1237:
         overflows = self.ffreader.get_last_overflows() - prev_overflows
         errors = self.last_error_count - prev_error_count
         if errors > 0:
-            logging.error("%s: Forced sensor restart due to error", self.name)
             self._finish_measurements()
             self._start_measurements()
         elif overflows > 0:
             self.consecutive_fails += 1
             if self.consecutive_fails > 4:
-                logging.error("%s: Forced sensor restart due to overflows",
-                              self.name)
                 self._finish_measurements()
                 self._start_measurements()
         else:

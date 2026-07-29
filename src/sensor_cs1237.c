@@ -54,7 +54,6 @@ enum {
 
 static struct task_wake wake_cs1237;
 
-
 /****************************************************************
  * Low-level bit-banging
  ****************************************************************/
@@ -262,6 +261,7 @@ cs1237_event(struct timer *timer)
     if (flags & CS_PENDING) {
         cs1237->sb.possible_overflows++;
         cs1237->flags = CS_PENDING | CS_OVERFLOW;
+        sched_wake_task(&wake_cs1237);
         rest_ticks *= 4;
     } else if (cs1237_is_data_ready(cs1237)) {
         // New sample pending
