@@ -16,12 +16,12 @@ This repository documents and hosts the patchset required for running mainline K
 
 - Keep the stock Q2 AP-board OS and update/tune it (external community guide).
 - Install the host Klipper stack with KIAUH.
-- Start with current upstream Klipper and Katapult checkouts.
+- Start with the exact Klipper and Katapult commits in the known-good matrix.
 - Clone this repo and run `./apply_patch.sh all`.
 - To use the optional maximum-frequency builds, apply patches 6-7 with
   `./apply_patch.sh --with-max-clocks all` instead.
-- If a current revision is incompatible, use the known-good fallback listed in
-  the known-good matrix instead of forcing the patch.
+- Do not use a newer Klipper revision just because the patches apply. It remains
+  unsupported until it passes the Q2 hardware tests.
 - For a fresh installation, flash Katapult via ST-Link, then flash Klipper via
   Katapult.
 
@@ -51,9 +51,14 @@ Automatic flashing is only for both MCUs already using the Katapult application
 offsets from this repository's installation instructions: `0x08008000` on the
 mainboard and `0x08002000` on the toolhead.
 
-The updater attempts the latest upstream Klipper revision by default. A
-documented known-good revision can be selected explicitly if the latest
-revision no longer accepts or builds the patch series.
+The latest supported Klipper revision is
+`9c1ae230eaebd5ec4df76d5a87537e2f35defab0`. The updater selects this commit by
+default. Later upstream revisions changed load-cell probing to lift and fit
+contact data after every tap. That code targets slow ADCs. The Q2 CS1237 samples
+at 1280 samples per second and already produces repeatable results without the
+extra fit. On the Q2, the new ascent also caused a Z-homing coordinate error.
+This repository will stay pinned until a newer Klipper revision passes the same
+Q2 hardware tests.
 
 ## Start here
 

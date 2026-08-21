@@ -87,12 +87,12 @@ Notes:
 
 ## 4) Get upstream sources
 
-If `~/klipper` already exists from KIAUH, keep it. Start from the current
-upstream Klipper `master` revision:
+If `~/klipper` already exists from KIAUH, keep it. Check out the latest
+supported Klipper commit:
 
 ```bash
 git -C ~/klipper fetch https://github.com/Klipper3d/klipper.git master
-git -C ~/klipper checkout --detach FETCH_HEAD
+git -C ~/klipper checkout --detach 9c1ae230eaebd5ec4df76d5a87537e2f35defab0
 ```
 
 Clone Katapult if needed, then start from its current upstream `master`
@@ -108,10 +108,10 @@ git fetch https://github.com/Arksine/katapult.git master
 git checkout --detach FETCH_HEAD
 ```
 
-The known-good fallback revisions are listed in
-[KNOWN_GOOD_MATRIX.md](KNOWN_GOOD_MATRIX.md). Current upstream is attempted
-first; those checkpoints remain available if a patch compatibility check fails
-or the current revision does not build or operate correctly.
+The supported commits are listed in
+[KNOWN_GOOD_MATRIX.md](KNOWN_GOOD_MATRIX.md). A newer Klipper revision remains
+unsupported until the patches have been reviewed and the Q2 hardware tests
+pass.
 
 ## 5) Apply Q2 patches from this repo
 
@@ -153,8 +153,8 @@ KATAPULT_DIR=/path/to/katapult \
 The helper checks the complete ordered series before modifying either checkout.
 
 If the check fails, do not force the patches. Confirm that both repositories
-are clean, then check out the fallback printed by the helper and rerun it. The
-fallback revisions can also be printed directly:
+are clean, then check out the known-good revision printed by the helper and
+rerun it. The known-good revisions can also be printed directly:
 
 ```bash
 cd ~/Qidi_Q2_Mainline_Klipper
@@ -429,8 +429,8 @@ Merge the documented sections into the configuration actually included by
 
 ## 11) Troubleshooting quick notes
 
-1. `git apply --check` fails on current upstream: confirm the checkout is
-   clean, then use the relevant fallback in
+1. `git apply --check` fails on another upstream revision: confirm the checkout
+   is clean, then use the supported base in
    [KNOWN_GOOD_MATRIX.md](KNOWN_GOOD_MATRIX.md).
 2. No Katapult USB after mainboard ST-Link flash: run probe again and rerun erase/write commands.
 3. `flashtool.py` import errors: ensure `python3-serial` is installed.

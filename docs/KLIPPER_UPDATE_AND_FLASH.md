@@ -18,19 +18,23 @@ GD32F303 builds.
 
 ## Choosing a revision
 
-The default update attempt uses the latest commit fetched from upstream
-Klipper `master`. The revision is resolved to an exact commit before the
-printer is stopped.
+The default update uses the Q2-tested Klipper commit in
+[KNOWN_GOOD_MATRIX.md](KNOWN_GOOD_MATRIX.md). The updater fetches upstream and
+resolves that commit before it stops the printer.
 
-The fallback in [KNOWN_GOOD_MATRIX.md](KNOWN_GOOD_MATRIX.md) can be selected
-explicitly if current upstream does not accept or build the patches:
+Newer upstream load-cell code lifts after each tap and fits the ascent samples
+to estimate the contact position. That change targets slow ADCs. The Q2 CS1237
+samples at 1280 samples per second and already gives repeatable results without
+the extra fit. During Q2 testing, the new ascent also caused a Z-homing
+coordinate error. Newer revisions remain opt-in until one passes the Q2
+hardware tests.
 
 ```bash
-# Latest upstream master (default)
+# Latest supported Q2 revision (default)
 ./update_q2_klipper.sh update
 
-# Known-good fallback
-./update_q2_klipper.sh update --klipper-revision known-good
+# Explicit latest upstream evaluation
+./update_q2_klipper.sh update --klipper-revision latest
 
 # Optional maximum-frequency builds
 ./update_q2_klipper.sh update --with-max-clocks
@@ -40,8 +44,8 @@ explicitly if current upstream does not accept or build the patches:
   --klipper-revision <full-40-character-commit>
 ```
 
-If patching or building fails, the updater stops and prints the command for
-retrying with `known-good`.
+If another revision fails during patching or building, the updater stops and
+prints the command for returning to `known-good`.
 
 ## Update model
 
@@ -229,19 +233,19 @@ calibration from another machine.
 
 ### 3. Resolve the upstream base
 
-Fetch current upstream and record its exact commit:
+Fetch upstream, then select the latest supported Q2 commit:
 
 ```bash
 git -C ~/klipper fetch https://github.com/Klipper3d/klipper.git master
-selected_base="$(git -C ~/klipper rev-parse FETCH_HEAD)"
+selected_base="$(~/Qidi_Q2_Mainline_Klipper/apply_patch.sh --print-klipper-known-good)"
 base_short="${selected_base:0:8}"
 printf '%s\n' "$selected_base"
 ```
 
-To use the known-good fallback instead, set:
+To deliberately evaluate the fetched upstream revision instead, set:
 
 ```bash
-selected_base="$(~/Qidi_Q2_Mainline_Klipper/apply_patch.sh --print-klipper-known-good)"
+selected_base="$(git -C ~/klipper rev-parse FETCH_HEAD)"
 base_short="${selected_base:0:8}"
 ```
 
@@ -274,8 +278,9 @@ KLIPPER_DIR=~/klipper ./apply_patch.sh klipper
 git -C ~/klipper diff --check
 ```
 
-If the patch check fails on current upstream, leave Klipper stopped and repeat
-the update from the documented known-good base. Do not force a rejected patch.
+If the patch check fails on another upstream revision, leave Klipper stopped
+and repeat the update from the documented known-good base. Do not force a
+rejected patch.
 
 Do not use `git pull` directly on the patched checkout; repeat this backup,
 reset, patch, build, and flash process instead.

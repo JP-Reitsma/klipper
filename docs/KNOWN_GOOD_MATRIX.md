@@ -1,8 +1,8 @@
 # Known-Good Matrix
 
-This page lists upstream revisions known to work with the Q2 patches. Use them
-as fallbacks if the current upstream revision does not accept or build the
-patch series.
+This page lists the upstream commits supported by the Q2 patches. The updater
+and installation guide use these commits by default. A newer revision remains
+unsupported until its patches apply and it passes the Q2 hardware tests.
 
 ## Klipper
 
@@ -26,6 +26,13 @@ monitored without crashing the mainboard. The combined 200 MHz mainboard and
 120 MHz toolhead profile has also been validated on Q2 hardware with both MCU
 links, MCU temperatures, heaters and sensors, homing, bed mesh, and resonance
 testing operating normally.
+
+Newer Klipper code lifts after every load-cell tap and fits the ascent samples
+to estimate contact. It targets slow ADCs, while the Q2 CS1237 samples at 1280
+samples per second and already probes reliably without the extra fit. The new
+ascent also caused a Z-homing coordinate error during Q2 testing. This
+repository remains pinned to the commit above until a newer revision passes the
+same Q2 hardware tests.
 
 ## Katapult
 

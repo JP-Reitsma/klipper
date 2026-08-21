@@ -39,7 +39,7 @@ MAINBOARD_DEVICE=""
 BUILD_JOBS=1
 ASSUME_YES=0
 FLASH_METHOD="prompt"
-KLIPPER_REVISION_REQUEST="latest"
+KLIPPER_REVISION_REQUEST="known-good"
 KLIPPER_BASE_COMMIT=""
 KLIPPER_BASE_SHORT=""
 KLIPPER_BASE_IS_KNOWN_GOOD=0
@@ -58,8 +58,8 @@ usage() {
 Usage: $(basename "$0") <command> [options]
 
 Update a Qidi Q2 installation by applying the Q2 patch series to a selected
-upstream Klipper revision. The default is the latest upstream master revision;
-the documented known-good revision is available as an explicit fallback.
+upstream Klipper revision. The default is the Q2-tested commit listed in
+docs/KNOWN_GOOD_MATRIX.md. Newer revisions require explicit selection.
 
 Commands:
   check      Run read-only host, dependency, and path preflight checks.
@@ -101,9 +101,9 @@ Options:
 Examples:
   $(basename "$0") check
   $(basename "$0") update
+  $(basename "$0") update --klipper-revision latest --flash-method manual
   $(basename "$0") update --flash-method manual
   $(basename "$0") update --with-max-clocks --flash-method manual
-  $(basename "$0") update --klipper-revision known-good --flash-method manual
   $(basename "$0") update --flash-method katapult --main-device <device>
 
 The updater modifies the active Klipper installation only after stopping the
