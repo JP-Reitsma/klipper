@@ -210,6 +210,7 @@ config MCU
 
 config CLOCK_FREQ
     int
+    default 200000000 if STM32F4_GD32F425_200MHZ
     default 48000000 if MACH_STM32F0
     default 64000000 if MACH_STM32F103 && STM32_CLOCK_REF_INTERNAL
     default 72000000 if MACH_STM32F103
@@ -386,6 +387,16 @@ config CLOCK_REF_FREQ
     default 12000000 if STM32_CLOCK_REF_12M
     default 1 if STM32_CLOCK_REF_INTERNAL
     default 8000000
+
+config STM32F4_GD32F425_200MHZ
+    bool "Run the Q2 GD32F425 at 200 MHz" if LOW_LEVEL_OPTIONS
+    depends on MACH_GD32F425_Q2 && STM32_CLOCK_REF_8M
+    depends on STM32F4_GD32_USB_INIT_WORKAROUND
+    default n
+    help
+        Run the Qidi Q2 GD32F425 target from its 8 MHz crystal at
+        200 MHz. This enables the GD32 high-drive power mode and
+        supplies an exact 48 MHz USB/SDIO clock from PLLSAI.
 
 config STM32F0_TRIM
     int "Internal clock trim override" if LOW_LEVEL_OPTIONS && MACH_STM32F0 && STM32_CLOCK_REF_INTERNAL && !USBSERIAL
