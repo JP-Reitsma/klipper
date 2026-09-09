@@ -61,7 +61,12 @@ adc_calibrate(ADC_TypeDef *adc)
 {
 #if CONFIG_MACH_STM32F1
     adc->CR2 = ADC_CR2_ADON;
+#if CONFIG_MACH_GD32F303_Q2
+    // GD32F30x erratum: wait 1ms after enabling ADC before calibration.
+    udelay(1000);
+#else
     udelay(10);
+#endif
     adc->CR2 = ADC_CR2_ADON | ADC_CR2_RSTCAL;
     while (adc->CR2 & ADC_CR2_RSTCAL)
         ;
@@ -156,6 +161,10 @@ uint16_t
 gpio_adc_read(struct gpio_adc g)
 {
     ADC_TypeDef *adc = g.adc;
+#if CONFIG_MACH_GD32F303_Q2
+    // GD32F30x erratum: defer the data read by at least two ADC clocks.
+    udelay(1);
+#endif
     adc->SR = ~ADC_SR_STRT;
     return adc->DR;
 }
