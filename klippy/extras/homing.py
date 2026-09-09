@@ -320,11 +320,16 @@ class PrinterHoming:
     def check_probe_first_home(self, gcmd):
         return (gcmd.get_command() == 'G28'
                 and gcmd.get("HOME_ATTEMPT_NUM", None) == '1')
-    def probing_move(self, mcu_probe, pos, speed, check_movement=True):
+    def probing_move(self, mcu_probe, pos, speed,
+                     check_movement=True, check_triggered=True):
         endstops = [(mcu_probe, "probe")]
         hmove = HomingMove(self.printer, endstops)
         try:
-            epos = hmove.homing_move(pos, speed, probe_pos=True)
+            epos = hmove.homing_move(
+                pos,
+                speed,
+                probe_pos=True,
+                check_triggered=check_triggered)
         except self.printer.command_error:
             if self.printer.is_shutdown():
                 raise self.printer.command_error(

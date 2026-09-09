@@ -376,6 +376,20 @@ class LoadCellProbingMove:
         epos = phoming.probing_move(self._mcu_trigger_analog, pos, speed)
         return epos, collector
 
+    # Probe down by the requested distance without requiring a trigger
+    def probing_move_allow_no_trigger(self, gcmd, distance):
+        if not self._load_cell.is_calibrated():
+            raise self._printer.command_error("Load Cell not calibrated")
+        self._pause_and_tare(gcmd)
+        toolhead = self._printer.lookup_object('toolhead')
+        pos = toolhead.get_position()
+        pos[2] -= distance
+        speed = self._param_helper.get_probe_params(gcmd)['probe_speed']
+        phoming = self._printer.lookup_object('homing')
+        phoming.probing_move(
+            self._mcu_trigger_analog, pos, speed,
+            check_triggered=False)
+
     # Wait for the MCU to trigger with no movement
     def probing_test(self, gcmd, timeout):
         self._pause_and_tare(gcmd)
@@ -631,6 +645,17 @@ class LoadCellProbeCommands:
         gcode = self._printer.lookup_object('gcode')
         gcode.register_command("LOAD_CELL_TEST_TAP",
             self.cmd_LOAD_CELL_TEST_TAP, desc=self.cmd_LOAD_CELL_TEST_TAP_help)
+        gcode.register_command("PROBING_MOVE_ALLOW_NO_TRIGGER",
+            self.cmd_PROBING_MOVE_ALLOW_NO_TRIGGER,
+            desc=self.cmd_PROBING_MOVE_ALLOW_NO_TRIGGER_help)
+
+    cmd_PROBING_MOVE_ALLOW_NO_TRIGGER_help = \
+        "Probe down by a distance without requiring a trigger"
+
+    def cmd_PROBING_MOVE_ALLOW_NO_TRIGGER(self, gcmd):
+        distance = gcmd.get_float("D", 5., minval=0.)
+        self._load_cell_probing_move.probing_move_allow_no_trigger(
+            gcmd, distance)
 
     cmd_LOAD_CELL_TEST_TAP_help = "Tap the load cell probe to verify operation"
 
