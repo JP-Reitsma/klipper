@@ -383,6 +383,15 @@ config STM32F0_TRIM
         Default is 16 (use factory default). Each increment increases
         the clock rate by ~240KHz.
 
+config STM32F4_GD32_USB_INIT_WORKAROUND
+    bool "GD32F4 USB init workaround" if LOW_LEVEL_OPTIONS
+    depends on MACH_STM32F4x5 && USBSERIAL
+    default n
+    help
+        Enable a USB initialization workaround for GD32F4 clones
+        (including GD32F425) that may fail to enumerate after
+        bootloader handoff.
+
 
 ######################################################################
 # Communication inteface
