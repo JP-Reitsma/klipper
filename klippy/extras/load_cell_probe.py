@@ -316,10 +316,12 @@ class LoadCellProbingMove:
     # pauses for the last move to complete and then
     # sets the endstop tare value and range
     def _pause_and_tare(self, gcmd):
+        self._printer.lookup_object('gcode').run_script_from_command("PRE_TARE")
         collector = self._start_collector()
         num_samples = self._config_helper.get_tare_samples(gcmd)
         # use collect_min collected samples are not wasted
         results = collector.collect_min(num_samples)
+        self._printer.lookup_object('gcode').run_script_from_command("POST_TARE")
         tare_samples = check_sensor_errors(results, self._printer)
         tare_counts = np.average(np.array(tare_samples)[:, 2].astype(float))
         # update sos_filter with any gcode parameter changes
@@ -352,6 +354,7 @@ class LoadCellProbingMove:
         speed = self._param_helper.get_probe_params(gcmd)['probe_speed']
         phoming = self._printer.lookup_object('homing')
         # start collector after tare samples are consumed
+        self._printer.lookup_object('gcode').run_script_from_command("PRE_PROBE")
         collector = self._start_collector()
         # do homing move
         epos = phoming.probing_move(self._mcu_trigger_analog, pos, speed)
@@ -412,6 +415,7 @@ class TappingMove:
         toolhead.flush_step_generation()
         move_end = toolhead.get_last_move_time()
         results = collector.collect_until(move_end)
+        self._printer.lookup_object('gcode').run_script_from_command("POST_PROBE")
         samples = check_sensor_errors(results, self._printer)
         # Analyze the tap data
         ppa = TapAnalysis(samples)
