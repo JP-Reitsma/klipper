@@ -7,7 +7,7 @@ import logging
 from . import bulk_sensor
 
 UPDATE_INTERVAL = 0.10
-
+SAMPLE_MISSED = 1 << 28
 
 class CS1237:
     def __init__(self, config):
@@ -91,6 +91,8 @@ class CS1237:
         adc_factor = 1. / (1 << 23)
         count = 0
         for ptime, value in samples:
+            if value == SAMPLE_MISSED:
+                continue
             top_byte = (value >> 24) & 0xff
             if top_byte != 0x00 and top_byte != 0xff:
                 self.last_error_count += 1
