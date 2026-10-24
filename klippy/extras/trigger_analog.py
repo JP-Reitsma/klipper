@@ -288,11 +288,142 @@ class MCU_trigger_analog:
         # Error codes from MCU
         self._error_map = {}
         self._sensor_specific_error = 0
+        self._debug_samples_by_request = {}
+        self._debug_duplicate_counts = {}
+        self._debug_done_by_request = {}
+        self._debug_request_id = 0
+        self._debug_last_trigger_count = None
         # Configure MCU objects
         self._oid = self._mcu.create_oid()
         self._home_cmd = self._query_state_cmd = None
         self._set_raw_range_cmd = self._set_trigger_cmd = None
         self._mcu.register_config_callback(self._build_config)
+        self._printer.lookup_object('gcode').register_command(
+            "LOAD_CELL_TRIGGER_DUMP", self.cmd_LOAD_CELL_TRIGGER_DUMP,
+            desc="Dump raw and filtered samples around the last load-cell trigger")
+
+    def _handle_debug_sample(self, params):
+        request_id = params['request_id']
+        samples = self._debug_samples_by_request.get(request_id)
+        if samples is None:
+            return
+        index = params['index']
+        if index in samples:
+            self._debug_duplicate_counts[request_id] = (
+                self._debug_duplicate_counts.get(request_id, 0) + 1)
+        samples[index] = params
+
+    def _handle_debug_done(self, params):
+        request_id = params['request_id']
+        if request_id in self._debug_samples_by_request:
+            self._debug_done_by_request[request_id] = params
+
+    def cmd_LOAD_CELL_TRIGGER_DUMP(self, gcmd):
+        # The request ID prevents late responses from a prior dump being mixed
+        # with this one. Key samples by MCU index so duplicates are detectable.
+        self._debug_request_id = (self._debug_request_id + 1) & 0xffffffff
+        if not self._debug_request_id:
+            self._debug_request_id = 1
+        request_id = self._debug_request_id
+        samples_by_index = {}
+        self._debug_samples_by_request = {request_id: samples_by_index}
+        self._debug_duplicate_counts = {request_id: 0}
+        self._debug_done_by_request = {}
+        # Send a regular MCU command and collect its responses asynchronously.
+        # This allows partial samples to be displayed even if the final done
+        # response is missing (the synchronous query wrapper otherwise raises).
+        self._dump_debug_cmd.send([self._oid, request_id])
+        reactor = self._printer.get_reactor()
+        deadline = reactor.monotonic() + 0.500
+        while (request_id not in self._debug_done_by_request
+               and reactor.monotonic() < deadline):
+            reactor.pause(min(deadline, reactor.monotonic() + 0.005))
+        params = self._debug_done_by_request.get(request_id)
+        if params is None:
+            samples = [samples_by_index[i] for i in sorted(samples_by_index)]
+            lines = ["WARNING: MCU did not send trigger_analog_debug_done for request_id=%d." % request_id,
+                     "Received %d unique sample(s); trigger metadata unavailable." % len(samples)]
+            if not samples:
+                lines.append("No diagnostic samples were received.")
+            else:
+                trigger_sample = next((s for s in samples if s['triggered']), None)
+                ref_sample = trigger_sample if trigger_sample is not None else samples[-1]
+                ref_clock = self._mcu.clock32_to_clock64(ref_sample['time'])
+                ref_time = self._mcu.clock_to_print_time(ref_clock)
+                lines.append(" idx   dt_ms       raw_counts   filtered_internal   trigger")
+                for sample in samples:
+                    clock = self._mcu.clock32_to_clock64(sample['time'])
+                    ptime = self._mcu.clock_to_print_time(clock)
+                    dt_ms = (ptime - ref_time) * 1000.
+                    mark = "<-- TRIGGER" if sample['triggered'] else ""
+                    lines.append("%4d %8.3f %14d %19d %s"
+                                 % (sample['index'], dt_ms, sample['raw'],
+                                    sample['filtered'], mark))
+            gcmd.respond_info("\n".join(lines))
+            return
+        if params['request_id'] != request_id:
+            gcmd.respond_info("Diagnostic response ID mismatch; discard this dump.")
+            return
+
+        expected_count = params['count']
+        # Allow a short grace period for asynchronously delivered sample packets.
+        deadline = reactor.monotonic() + 0.250
+        while (not all(i in samples_by_index for i in range(expected_count))
+               and reactor.monotonic() < deadline):
+            reactor.pause(min(deadline, reactor.monotonic() + 0.005))
+
+        samples = [samples_by_index[i] for i in sorted(samples_by_index)]
+        duplicate_count = self._debug_duplicate_counts.get(request_id, 0)
+        trigger_sample = next((s for s in samples if s['triggered']), None)
+        ref_sample = (trigger_sample if trigger_sample is not None
+                      else (samples[-1] if samples else None))
+        source = ("last actual MCU trigger snapshot" if params['snapshot_valid']
+                  else "recent samples (no MCU trigger snapshot)")
+        trigger_count = params['trigger_count']
+        lines = ["Load-cell MCU diagnostics: %s; samples=%d/%d; MCU value-trigger count since boot=%d; snapshot_valid=%s; threshold=%d (internal units)"
+                 % (source, len(samples), expected_count, trigger_count,
+                    "yes" if params['snapshot_valid'] else "no",
+                    params['trigger_value'])]
+        if self._debug_last_trigger_count is None:
+            lines.append("New MCU triggers since previous dump: unavailable (first dump)")
+        else:
+            delta = (trigger_count - self._debug_last_trigger_count) & 0xffffffff
+            lines.append("New MCU triggers since previous dump: %d" % delta)
+        self._debug_last_trigger_count = trigger_count
+        if trigger_count:
+            last_clock = self._mcu.clock32_to_clock64(params['last_trigger_time'])
+            last_time = self._mcu.clock_to_print_time(last_clock)
+            lines.append("Last MCU trigger print_time=%.3f s" % last_time)
+        if params['source'] != params['snapshot_valid']:
+            lines.append("WARNING: MCU source flag and snapshot_valid disagree.")
+        if params['snapshot_valid'] and trigger_sample is None:
+            lines.append("WARNING: saved snapshot has no sample marked TRIGGER.")
+        if duplicate_count:
+            lines.append("WARNING: received %d duplicate sample indexes; latest copy retained."
+                         % duplicate_count)
+        if len(samples) != expected_count:
+            lines.append("WARNING: MCU reported %d samples but host received %d unique indexes."
+                         % (expected_count, len(samples)))
+            missing = [i for i in range(expected_count) if i not in samples_by_index]
+            extra = [i for i in sorted(samples_by_index) if i >= expected_count]
+            if missing:
+                lines.append("Missing sample indexes: %s" % ", ".join(str(i) for i in missing))
+            if extra:
+                lines.append("Unexpected sample indexes: %s" % ", ".join(str(i) for i in extra))
+        if not samples:
+            lines.append("No diagnostic samples were received.")
+        else:
+            ref_clock = self._mcu.clock32_to_clock64(ref_sample['time'])
+            ref_time = self._mcu.clock_to_print_time(ref_clock)
+            lines.append(" idx   dt_ms       raw_counts   filtered_internal   trigger")
+            for s in samples:
+                clock = self._mcu.clock32_to_clock64(s['time'])
+                ptime = self._mcu.clock_to_print_time(clock)
+                dt_ms = (ptime - ref_time) * 1000.
+                mark = "<-- TRIGGER" if s['triggered'] else ""
+                lines.append("%4d %8.3f %14d %19d %s"
+                             % (s['index'], dt_ms, s['raw'], s['filtered'], mark))
+        gcmd.respond_info("\n".join(lines))
 
     def setup_sos_filter(self, sos_filter):
         self._sos_filter = sos_filter
@@ -305,6 +436,19 @@ class MCU_trigger_analog:
         self._mcu.add_config_cmd(
             "config_trigger_analog oid=%d sos_filter_oid=%d" % (
                 self._oid, self._sos_filter.get_oid()))
+        # Asynchronous sample responses are delivered before the query's final
+        # response, which makes the dump command a synchronous snapshot read.
+        self._mcu.register_serial_response(
+            self._handle_debug_sample,
+            "trigger_analog_debug_sample oid=%c request_id=%u index=%c time=%u raw=%i"
+            " filtered=%i triggered=%c", oid=self._oid)
+        self._mcu.register_serial_response(
+            self._handle_debug_done,
+            "trigger_analog_debug_done oid=%c request_id=%u count=%c source=%c"
+            " trigger_value=%i trigger_count=%u last_trigger_time=%u snapshot_valid=%c",
+            oid=self._oid)
+        self._dump_debug_cmd = self._mcu.lookup_command(
+            "trigger_analog_dump oid=%c request_id=%u", cq=cmd_queue)
         # Lookup commands
         self._query_state_cmd = self._mcu.lookup_query_command(
             "trigger_analog_query_state oid=%c",
