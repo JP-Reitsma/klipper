@@ -17,7 +17,8 @@
 // Diagnostic history: retain recent samples and snapshot the samples around
 // the most recent trigger. This does not change trigger decisions.
 #define TA_DEBUG_RING_SIZE 24
-#define TA_DEBUG_CAPTURE_SIZE TA_DEBUG_RING_SIZE
+#define TA_DEBUG_POST_SAMPLES 8
+#define TA_DEBUG_CAPTURE_SIZE (TA_DEBUG_RING_SIZE + TA_DEBUG_POST_SAMPLES)
 struct trigger_analog_sample { uint32_t time; int32_t raw, filtered; };
 
 // Main trigger_analog storage
@@ -41,7 +42,7 @@ struct trigger_analog {
     struct trigger_analog_sample debug_ring[TA_DEBUG_RING_SIZE];
     uint8_t debug_ring_count, debug_ring_pos;
     struct trigger_analog_sample debug_capture[TA_DEBUG_CAPTURE_SIZE];
-    uint8_t debug_capture_count, debug_trigger_index;
+    uint8_t debug_capture_count, debug_trigger_index, debug_post_remaining;
     uint8_t debug_capture_triggered;
     uint8_t debug_capture_valid;
     uint32_t debug_trigger_count, debug_last_trigger_time;
@@ -155,9 +156,25 @@ debug_save_trigger(struct trigger_analog *ta, uint32_t time)
     ta->debug_capture_count = count;
     ta->debug_trigger_index = count ? count - 1 : 0;
     ta->debug_capture_triggered = 1;
+    ta->debug_post_remaining = TA_DEBUG_POST_SAMPLES;
     ta->debug_capture_valid = 1;
     ta->debug_trigger_count++;
     ta->debug_last_trigger_time = time;
+}
+
+static void
+debug_record_post(struct trigger_analog *ta, uint32_t time, int32_t raw,
+                  int32_t filtered)
+{
+    if (!ta->debug_post_remaining)
+        return;
+    if (ta->debug_capture_count < TA_DEBUG_CAPTURE_SIZE) {
+        uint8_t pos = ta->debug_capture_count++;
+        ta->debug_capture[pos].time = time;
+        ta->debug_capture[pos].raw = raw;
+        ta->debug_capture[pos].filtered = filtered;
+    }
+    ta->debug_post_remaining--;
 }
 
 // Reset fields associated with trigger checking
@@ -194,16 +211,17 @@ trigger_analog_update(struct trigger_analog *ta, int32_t sample)
     if (!ta)
         return;
     uint8_t flags = ta->flags;
+    // Continue filtering briefly after a trigger to capture post-trigger data.
     int active = !!(flags & TA_CAN_TRIGGER);
-    if (!active)
+    if (!active && !ta->debug_post_remaining)
         return;
 
     // Check if homing has started
     uint32_t time = timer_read_time();
-    if ((flags & TA_AWAIT_HOMING)
-        && timer_is_before(time, ta->homing_clock))
-        return;
     if (active) {
+        if ((flags & TA_AWAIT_HOMING)
+            && timer_is_before(time, ta->homing_clock))
+            return;
         flags &= ~TA_AWAIT_HOMING;
         // Reset the sensor timeout checking
         monitor_note_activity(ta);
@@ -225,7 +243,10 @@ trigger_analog_update(struct trigger_analog *ta, int32_t sample)
         return;
     }
 
-    debug_record_ring(ta, time, sample, filtered_value);
+    if (active)
+        debug_record_ring(ta, time, sample, filtered_value);
+    if (!active || ta->debug_post_remaining)
+        debug_record_post(ta, time, sample, filtered_value);
 
     // Check if this is a "trigger"
     if (active) {
@@ -302,6 +323,7 @@ command_trigger_analog_home(uint32_t *args)
     ta->flags = TA_AWAIT_HOMING | TA_CAN_TRIGGER;
     // Start a fresh sample ring for each move. Preserve the last trigger
     // snapshot until the next actual trigger overwrites it.
+    ta->debug_post_remaining = 0;
     ta->debug_ring_count = ta->debug_ring_pos = 0;
     trigger_reset(ta);
     sched_add_timer(&ta->time);
