@@ -302,6 +302,9 @@ class LoadCellProbingMove:
         probe.LookupZSteppers(config, dispatch.add_stepper)
         # internal state tracking
         self._tare_counts = 0
+        self._tare_samples_history = []
+        self._tare_action_number = 0
+        self._current_tare_action = None
 
     def _start_collector(self):
         toolhead = self._printer.lookup_object('toolhead')
@@ -311,6 +314,23 @@ class LoadCellProbingMove:
         collector = self._load_cell.get_collector()
         collector.start_collecting(min_time=print_time)
         return collector
+
+    def get_tare_sample_history(self):
+        return list(self._tare_samples_history)
+
+    def record_probe_samples(self, results, status):
+        action = self._current_tare_action
+        if action is None:
+            return
+        samples, errors = results
+        action["probe_sample_total"] = len(samples)
+        # Keep the first 128 samples (~100 ms at 1280 SPS).
+        action["probe_samples"] = [
+            (float(sample[0]), int(sample[2]))
+            for sample in samples[:128]]
+        action["probe_status"] = status
+        action["probe_errors"] = errors or 0
+        self._current_tare_action = None
 
     # pauses for the last move to complete and then
     # sets the endstop tare value and range
@@ -323,6 +343,20 @@ class LoadCellProbingMove:
         self._printer.lookup_object('gcode').run_script_from_command("POST_TARE")
         tare_samples = check_sensor_errors(results, self._printer)
         tare_counts = np.average(np.array(tare_samples)[:, 2].astype(float))
+        self._tare_action_number += 1
+        action = {
+            "action_number": self._tare_action_number,
+            "tare_samples": [(float(sample[0]), int(sample[2]))
+                             for sample in tare_samples],
+            "tare_counts": float(tare_counts),
+            "probe_samples": [],
+            "probe_sample_total": 0,
+            "probe_status": "not captured yet",
+            "probe_errors": 0,
+        }
+        self._tare_samples_history.append(action)
+        self._tare_samples_history = self._tare_samples_history[-2:]
+        self._current_tare_action = action
         # update sos_filter with any gcode parameter changes
         self._continuous_tare_filter_helper.update_from_command(gcmd)
         # update the load cell so it reflects the new tare value
@@ -356,7 +390,14 @@ class LoadCellProbingMove:
         self._printer.lookup_object('gcode').run_script_from_command("PRE_PROBE")
         collector = self._start_collector()
         # do homing move
-        epos = phoming.probing_move(self._mcu_trigger_analog, pos, speed)
+        try:
+            epos = phoming.probing_move(
+                self._mcu_trigger_analog, pos, speed)
+        except:
+            # Preserve post-tare samples even when probing raises an error.
+            results = collector.stop_collecting()
+            self.record_probe_samples(results, "probe raised exception")
+            raise
         return epos, collector
 
     # Probe down by the requested distance without requiring a trigger
@@ -410,12 +451,18 @@ class TappingMove:
         # do the descending move
         epos, collector = self._load_cell_probing_move.probing_move(gcmd)
         # collect samples from the tap
-        toolhead = self._printer.lookup_object('toolhead')
-        toolhead.flush_step_generation()
-        move_end = toolhead.get_last_move_time()
-        results = collector.collect_until(move_end)
-        self._printer.lookup_object('gcode').run_script_from_command("POST_PROBE")
-        samples = check_sensor_errors(results, self._printer)
+        try:
+            toolhead = self._printer.lookup_object('toolhead')
+            toolhead.flush_step_generation()
+            move_end = toolhead.get_last_move_time()
+            results = collector.collect_until(move_end)
+            self._load_cell_probing_move.record_probe_samples(
+                results, "probe move returned")
+            self._printer.lookup_object('gcode').run_script_from_command("POST_PROBE")
+            samples = check_sensor_errors(results, self._printer)
+        except:
+            collector.stop_collecting()
+            raise
         # Analyze the tap data
         ppa = TapAnalysis(samples)
         # broadcast tap event data:
@@ -475,6 +522,8 @@ class LoadCellProbeCommands:
         gcode.register_command("PROBING_MOVE_ALLOW_NO_TRIGGER",
             self.cmd_PROBING_MOVE_ALLOW_NO_TRIGGER,
             desc=self.cmd_PROBING_MOVE_ALLOW_NO_TRIGGER_help)
+        gcode.register_command("LOAD_CELL_TARE_DUMP",
+            self.cmd_LOAD_CELL_TARE_DUMP, desc=self.cmd_LOAD_CELL_TARE_DUMP_help)
 
     cmd_PROBING_MOVE_ALLOW_NO_TRIGGER_help = \
         "Probe down by a distance without requiring a trigger"
@@ -483,6 +532,47 @@ class LoadCellProbeCommands:
         distance = gcmd.get_float("D", 5., minval=0.)
         self._load_cell_probing_move.probing_move_allow_no_trigger(
             gcmd, distance)
+
+    cmd_LOAD_CELL_TARE_DUMP_help = \
+        "Dump raw tare samples from the latest two probe attempts"
+
+    def cmd_LOAD_CELL_TARE_DUMP(self, gcmd):
+        history = self._load_cell_probing_move.get_tare_sample_history()
+        if not history:
+            gcmd.respond_info("No tare samples have been captured yet.")
+            return
+        for action in history:
+            number = action["action_number"]
+            tare_samples = action["tare_samples"]
+            probe_samples = action["probe_samples"]
+            gcmd.respond_info(
+                "Probe action #%d: tare=%d samples, tare_counts=%.2f; "
+                "post-tare=%d/%d samples stored/available; status=%s; errors=%s"
+                % (number, len(tare_samples), action["tare_counts"],
+                   len(probe_samples), action["probe_sample_total"],
+                   action["probe_status"], action["probe_errors"]))
+            if not tare_samples and not probe_samples:
+                gcmd.respond_info("No timestamped samples in this action.")
+                continue
+            time_origin = (tare_samples[0][0] if tare_samples
+                           else probe_samples[0][0])
+            for label, samples in (("TARE", tare_samples),
+                                   ("POST-TARE", probe_samples)):
+                if not samples:
+                    gcmd.respond_info("%s: no samples captured" % (label,))
+                    continue
+                gcmd.respond_info(
+                    "%s entries are dt_ms:raw_counts; relative to first TARE sample"
+                    % (label,))
+                for start in range(0, len(samples), 8):
+                    chunk = samples[start:start + 8]
+                    end = start + len(chunk) - 1
+                    values = " ".join(
+                        "%+.3f:%d" % ((sample[0] - time_origin) * 1000.,
+                                       sample[1])
+                        for sample in chunk)
+                    gcmd.respond_info("%s [%03d-%03d] %s" % (
+                        label, start, end, values))
 
     cmd_LOAD_CELL_TEST_TAP_help = "Tap the load cell probe to verify operation"
 
