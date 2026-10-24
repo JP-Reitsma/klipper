@@ -356,7 +356,12 @@ class LoadCellProbingMove:
         self._printer.lookup_object('gcode').run_script_from_command("PRE_PROBE")
         collector = self._start_collector()
         # do homing move
-        epos = phoming.probing_move(self._mcu_trigger_analog, pos, speed)
+        try:
+            epos = phoming.probing_move(self._mcu_trigger_analog, pos, speed)
+        except:
+            # A failed probe must not leave the sample collector running.
+            collector.stop_collecting()
+            raise
         return epos, collector
 
     # Probe down by the requested distance without requiring a trigger
@@ -410,12 +415,17 @@ class TappingMove:
         # do the descending move
         epos, collector = self._load_cell_probing_move.probing_move(gcmd)
         # collect samples from the tap
-        toolhead = self._printer.lookup_object('toolhead')
-        toolhead.flush_step_generation()
-        move_end = toolhead.get_last_move_time()
-        results = collector.collect_until(move_end)
-        self._printer.lookup_object('gcode').run_script_from_command("POST_PROBE")
-        samples = check_sensor_errors(results, self._printer)
+        try:
+            toolhead = self._printer.lookup_object('toolhead')
+            toolhead.flush_step_generation()
+            move_end = toolhead.get_last_move_time()
+            results = collector.collect_until(move_end)
+            self._printer.lookup_object('gcode').run_script_from_command("POST_PROBE")
+            samples = check_sensor_errors(results, self._printer)
+        except:
+            # Stop collection if tap processing exits with an exception.
+            collector.stop_collecting()
+            raise
         # Analyze the tap data
         ppa = TapAnalysis(samples)
         # broadcast tap event data:
