@@ -18,6 +18,9 @@
 struct cs1237_adc {
     struct timer timer;
     uint32_t rest_ticks;
+    uint32_t period_ticks;
+    uint32_t read_window_ticks;
+    uint32_t pending_since;
     uint8_t config;
     uint8_t flags;
     uint8_t is_configured;
@@ -31,6 +34,7 @@ struct cs1237_adc {
 enum {
     CS_PENDING = 1<<0, CS_OVERFLOW = 1<<1,
     CS_DID_RESTART = 1<<2, CS_CONFIG_PENDING = 1<<3, CS_CONFIG_VERIFY = 1<<4,
+    CS_READING = 1<<5, CS_WAIT_HIGH = 1<<6,
 };
 
 // Internal errors transmitted in sample reports
@@ -44,6 +48,9 @@ DECL_ENUMERATION("cs1237_error:", "CONFIG_NOT_ACCEPTED", SE_CONFIG);
 
 #define BYTES_PER_SAMPLE 4
 #define CS1237_WRITE_CONFIG 0x65
+#define SAMPLE_MISSED (1L << 28)
+#define DATA_UPDATE_TIME_US 27
+#define SYNC_POLL_TIME_US 10
 
 static struct task_wake wake_cs1237;
 
@@ -135,21 +142,53 @@ cs1237_is_data_ready(struct cs1237_adc *cs)
     return !gpio_in_read(cs->dout);
 }
 
+static uint32_t
+cs1237_sample_period_ticks(struct cs1237_adc *cs)
+{
+    uint32_t rate;
+    switch ((cs->config >> 4) & 0x03) {
+    case 0: rate = 10; break;
+    case 1: rate = 40; break;
+    case 2: rate = 640; break;
+    default: rate = 1280; break;
+    }
+    uint32_t second_ticks = timer_from_us(1000000);
+    return (second_ticks + rate - 1) / rate;
+}
+
 static uint_fast8_t
 cs1237_event(struct timer *timer)
 {
     struct cs1237_adc *cs = container_of(timer, struct cs1237_adc, timer);
     uint32_t rest_ticks = cs->rest_ticks;
-    if (cs->flags & CS_PENDING) {
-        cs->sb.possible_overflows++;
-        cs->flags |= CS_OVERFLOW;
-        rest_ticks *= 4;
+    uint8_t flags = cs->flags;
+    uint32_t now = timer_read_time();
+
+    if (flags & CS_READING) {
+        // DOUT carries ADC data during a frame read, not DRDY.
+    } else if (flags & CS_WAIT_HIGH) {
+        // Wait for DOUT to return high before accepting another DRDY.
+        if (!cs1237_is_data_ready(cs))
+            cs->flags &= ~CS_WAIT_HIGH;
+        else
+            rest_ticks = timer_from_us(SYNC_POLL_TIME_US);
+    } else if (flags & CS_PENDING) {
+        if (!(flags & CS_OVERFLOW)
+            && now - cs->pending_since >= cs->read_window_ticks) {
+            cs->sb.possible_overflows++;
+            cs->flags = flags | CS_OVERFLOW;
+        }
     } else if (cs1237_is_data_ready(cs)) {
-        cs->flags |= CS_PENDING;
+        cs->pending_since = now;
+        cs->flags = flags | CS_PENDING;
         sched_wake_task(&wake_cs1237);
         rest_ticks *= 8;
     }
-    cs->timer.waketime += rest_ticks;
+
+    uint32_t next = cs->timer.waketime + rest_ticks;
+    if (!timer_is_before(now, next))
+        next = now + rest_ticks;
+    cs->timer.waketime = next;
     return SF_RESCHEDULE;
 }
 
@@ -200,21 +239,50 @@ cs1237_handle_config_verify(struct cs1237_adc *cs, uint_fast8_t error)
 static void
 cs1237_read_adc(struct cs1237_adc *cs, uint8_t oid)
 {
-    if (cs->flags & (CS_DID_RESTART|CS_CONFIG_PENDING)) {
-        // Handle initial startup
+    irq_disable();
+    uint8_t old_flags = cs->flags;
+    if (!(old_flags & CS_PENDING) || (old_flags & CS_READING)) {
+        irq_enable();
+        return;
+    }
+    cs->flags = old_flags | CS_READING;
+    irq_enable();
+
+    if (old_flags & (CS_DID_RESTART|CS_CONFIG_PENDING)) {
+        // Handle initial startup without timer/event interference.
         cs1237_handle_startup(cs);
+        irq_disable();
+        cs->flags &= ~CS_READING;
+        irq_enable();
         return;
     }
 
-    // Bits 25-26 are update1 and a reserved zero.  Clock 27 only
+    uint32_t raw;
+    // Do not read a sample after its safe window has expired.
+    if ((old_flags & CS_OVERFLOW)
+        || timer_read_time() - cs->pending_since >= cs->read_window_ticks
+        || !cs1237_is_data_ready(cs)) {
+        if (!(old_flags & CS_OVERFLOW))
+            cs->sb.possible_overflows++;
+        uint8_t wait_high = cs1237_is_data_ready(cs);
+        irq_disable();
+        cs->flags = old_flags & CS_CONFIG_VERIFY;
+        if (wait_high)
+            cs->flags |= CS_WAIT_HIGH;
+        irq_enable();
+        add_sample(cs, oid, SAMPLE_MISSED);
+        return;
+    }
+
+    // Bits 25-26 are update1 and a reserved zero. Clock 27 only
     // forces DOUT high until the next conversion is ready - its
     // level depends on when the chip drives the line, not on the
     // conversion, so discard it instead of checking it.
-    uint32_t raw = cs1237_read_bits(cs, 27) >> 1;
+    raw = cs1237_read_bits(cs, 27) >> 1;
 
     irq_disable();
-    uint_fast8_t old_flags = cs->flags;
-    cs->flags = old_flags & ~(CS_PENDING | CS_OVERFLOW);
+    old_flags |= cs->flags;
+    cs->flags &= ~(CS_PENDING | CS_OVERFLOW | CS_READING);
     irq_enable();
 
     uint_fast8_t status = raw & 0x03;
@@ -282,6 +350,13 @@ command_query_cs1237(uint32_t *args)
     }
     gpio_in_reset(cs->dout, 0);
     gpio_out_write(cs->sclk, 0);
+
+    cs->period_ticks = cs1237_sample_period_ticks(cs);
+    uint32_t unsafe_ticks = cs->rest_ticks
+                            + timer_from_us(DATA_UPDATE_TIME_US);
+    cs->read_window_ticks = cs->period_ticks > unsafe_ticks
+                            ? cs->period_ticks - unsafe_ticks : 1;
+
     cs->flags = CS_DID_RESTART;
     if (!cs->is_configured)
         cs->flags |= CS_CONFIG_PENDING;
